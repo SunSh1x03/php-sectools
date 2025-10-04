@@ -1,0 +1,49 @@
+{
+  "meta": { "name": "scan-demo" },
+  "hosts": [
+    {
+      "ip": "10.0.0.1",
+      "hostname": "web01.local",
+      "services": [
+        {
+          "port": 80,
+          "proto": "tcp",
+          "name": "http",
+          "vulns": [
+            {
+              "cve": "CVE-2021-1234",
+              "title": "Example vuln",
+              "severity": "High",
+              "description": "Vulnerabilidade de exemplo para validação do pipeline."
+            }
+          ]
+        },
+        {
+          "port": 22,
+          "proto": "tcp",
+          "name": "ssh",
+          "vulns": []
+        }
+      ]
+    },
+    {
+      "ip": "10.0.0.2",
+      "hostname": "db01.local",
+      "services": [
+        {
+          "port": 5432,
+          "proto": "tcp",
+          "name": "postgres",
+          "vulns": [
+            {
+              "cve": "",
+              "title": "Porta exposta sem firewall",
+              "severity": "Medium",
+              "description": "Exemplo educacional."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
