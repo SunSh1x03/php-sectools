@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Attack Map — php-sectools</title>
+  <link href="https://unpkg.com/vis-network/styles/vis-network.min.css" rel="stylesheet"/>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial;background:#071229;color:#e7ecf7;margin:0}
+    .wrap{max-width:1100px;margin:20px auto;padding:16px}
+    #network{height:640px;border-radius:10px;border:1px solid rgba(255,255,255,.06);background:#071229}
+    .controls{margin:12px 0;display:flex;gap:8px;align-items:center}
+    button{padding:8px 12px;border-radius:8px;border:0;cursor:pointer}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Attack Map — php-sectools</h1>
+    <div class="controls">
+      <input id="graphId" placeholder="Graph ID (ex: 1)" style="padding:8px;border-radius:8px;border:1px solid #223" />
+      <button id="btnLoad">Carregar</button>
+      <span id="status" style="color:#93a4c8;margin-left:8px"></span>
+    </div>
+    <div id="network"></div>
+    <pre id="raw" style="margin-top:12px;color:#93a4c8;background:#071229;border:1px solid #122;padding:12px;border-radius:8px;display:none"></pre>
+  </div>
+
+  <script src="https://unpkg.com/vis-network/dist/vis-network.min.js"></script>
+  <script>
+    // Ajuste para sua API (editar se mudar)
+    const API_BASE = "https://php-sectools.onrender.com";
+
+    async function loadGraph(id){
+      const resp = await fetch(`${API_BASE}/api/graph?id=${encodeURIComponent(id)}`);
+      if(!resp.ok) throw new Error('HTTP ' + resp.status);
+      return resp.json();
+    }
+
+    function renderGraph(data){
+      const nodes = data.nodes.map(n => ({ id: n.id, label: n.label, group: n.group, title: JSON.stringify(n.meta) }));
+      const edges = data.edges.map(e => ({ from: e.from, to: e.to, label: e.relation, arrows: 'to' }));
+      const container = document.getElementById('network');
+      const dsNodes = new vis.DataSet(nodes);
+      const dsEdges = new vis.DataSet(edges);
+      const options = {
+        groups: {
+          host: { shape: 'dot', size:18 },
+          service: { shape: 'box' },
+          vuln: { shape: 'triangle' }
+        },
+        interaction: { hover:true, tooltipDelay:100 },
+        physics: { stabilization: true }
+      };
+      // destroy existing network if exists
+      if(container._visNetwork) container._visNetwork.destroy();
+      container._visNetwork = new vis.Network(container, { nodes: dsNodes, edges: dsEdges }, options);
+    }
+
+    document.getElementById('btnLoad').addEventListener('click', async ()=>{
+      const id = document.getElementById('graphId').value || '1';
+      const status = document.getElementById('status');
+      const raw = document.getElementById('raw');
+      status.textContent = 'Carregando...';
+      raw.style.display = 'none';
+      try {
+        const data = await loadGraph(id);
+        renderGraph(data);
+        raw.textContent = JSON.stringify(data, null, 2);
+        raw.style.display = 'block';
+        status.textContent = 'OK';
+      } catch (e) {
+        status.textContent = 'Erro: ' + e.message;
+      }
+    });
+
+    // Try default graph=1 on load
+    (async ()=>{
+      document.getElementById('graphId').value = '1';
+      document.getElementById('btnLoad').click();
+    })();
+  </script>
+</body>
+</html>
