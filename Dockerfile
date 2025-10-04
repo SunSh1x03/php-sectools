@@ -9,4 +9,4 @@ COPY . .
 EXPOSE 8080
 
 # Comando para iniciar o servidor PHP embutido
-CMD ["php", "-S", "0.0.0.0:8080", "-t", "."]
+CMD ["php", "-S", "0.0.0.0:8080", "api.php"]
