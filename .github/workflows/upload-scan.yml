@@ -1,0 +1,82 @@
+name: Upload scan to php-sectools
+
+on:
+  # dispara ao commitar o arquivo de scan
+  push:
+    paths:
+      - "example-scan.json"
+      - "scans/**/*.json"
+  # permite rodar manualmente pela UI e escolher arquivo
+  workflow_dispatch:
+    inputs:
+      json_path:
+        description: "Caminho do arquivo JSON (ex.: example-scan.json ou scans/demo.json)"
+        required: false
+        default: "example-scan.json"
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    env:
+      API_BASE: ${{ secrets.PHP_SECTOOLS_API_BASE }}
+      API_TOKEN: ${{ secrets.PHP_SECTOOLS_API_TOKEN }}
+      JSON_PATH: ${{ github.event.inputs.json_path || 'example-scan.json' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validar secrets
+        run: |
+          set -euo pipefail
+          if [ -z "${API_BASE:-}" ] || [ -z "${API_TOKEN:-}" ]; then
+            echo "Secrets ausentes: configure PHP_SECTOOLS_API_BASE e PHP_SECTOOLS_API_TOKEN."
+            exit 1
+          fi
+          echo "API_BASE=$API_BASE"
+
+      - name: Determinar arquivo JSON
+        id: pick
+        run: |
+          set -euo pipefail
+          FILE="$JSON_PATH"
+          # fallback: se chamado via push e não via dispatch, tente example-scan.json
+          if [ ! -f "$FILE" ]; then
+            if [ -f "example-scan.json" ]; then
+              FILE="example-scan.json"
+            else
+              echo "Arquivo JSON não encontrado: $JSON_PATH"
+              exit 1
+            fi
+          fi
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Mostrar trecho do JSON (debug)
+        run: |
+          head -n 40 "${{ steps.pick.outputs.file }}" || true
+
+      - name: Enviar para /api/upload-scan
+        run: |
+          set -euo pipefail
+          curl -sS --fail-with-body -X POST "${API_BASE%/}/api/upload-scan" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${API_TOKEN}" \
+            --data-binary @"${{ steps.pick.outputs.file }}" \
+            | tee response.json
+
+      - name: Extrair graph_id (se presente)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y >/dev/null 2>&1 || true
+          sudo apt-get install -y jq >/dev/null 2>&1 || true
+          GRAPH_ID=$(jq -r '.graph_id // empty' response.json || true)
+          if [ -n "$GRAPH_ID" ]; then
+            echo "graph_id=$GRAPH_ID" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Graph created::graph_id=$GRAPH_ID"
+          else
+            echo "::warning title=No graph_id in response::Verifique response.json"
+          fi
+
+      - name: Listar graphs (debug)
+        run: |
+          curl -sS --fail-with-body "${API_BASE%/}/api/graphs" | tee graphs.json
