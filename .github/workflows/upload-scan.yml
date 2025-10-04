@@ -1,22 +1,22 @@
 name: Upload scan to php-sectools
 
 on:
-  # dispara ao commitar o arquivo de scan
   push:
     paths:
       - "example-scan.json"
       - "scans/**/*.json"
-  # permite rodar manualmente pela UI e escolher arquivo
   workflow_dispatch:
     inputs:
       json_path:
-        description: "Caminho do arquivo JSON (ex.: example-scan.json ou scans/demo.json)"
+        description: "Caminho do arquivo JSON (ex.: example-scan.json)"
         required: false
         default: "example-scan.json"
 
 jobs:
   upload:
     runs-on: ubuntu-latest
+    outputs:
+      graph_id: ${{ steps.extract_graph_id.outputs.graph_id || '' }}
     env:
       API_BASE: ${{ secrets.PHP_SECTOOLS_API_BASE }}
       API_TOKEN: ${{ secrets.PHP_SECTOOLS_API_TOKEN }}
@@ -26,57 +26,60 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validar secrets
-        run: |
-          set -euo pipefail
-          if [ -z "${API_BASE:-}" ] || [ -z "${API_TOKEN:-}" ]; then
-            echo "Secrets ausentes: configure PHP_SECTOOLS_API_BASE e PHP_SECTOOLS_API_TOKEN."
-            exit 1
-          fi
-          echo "API_BASE=$API_BASE"
-
-      - name: Determinar arquivo JSON
+      - name: Determine JSON file
         id: pick
         run: |
           set -euo pipefail
-          FILE="$JSON_PATH"
-          # fallback: se chamado via push e não via dispatch, tente example-scan.json
+          FILE="${JSON_PATH}"
           if [ ! -f "$FILE" ]; then
+            echo "Arquivo $FILE não encontrado no workspace. Tentando example-scan.json..."
             if [ -f "example-scan.json" ]; then
               FILE="example-scan.json"
             else
-              echo "Arquivo JSON não encontrado: $JSON_PATH"
+              echo "::error::Arquivo JSON não encontrado: $JSON_PATH"
               exit 1
             fi
           fi
+          echo "Selected file: $FILE"
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
 
-      - name: Mostrar trecho do JSON (debug)
+      - name: Show head of JSON (debug)
         run: |
-          head -n 40 "${{ steps.pick.outputs.file }}" || true
+          echo "=== Head of selected file ==="
+          head -n 50 "${{ steps.pick.outputs.file }}" || true
 
-      - name: Enviar para /api/upload-scan
+      - name: Upload to API
+        id: upload
         run: |
           set -euo pipefail
-          curl -sS --fail-with-body -X POST "${API_BASE%/}/api/upload-scan" \
+          URL="${API_BASE%/}/api/upload-scan"
+          echo "Posting ${GITHUB_WORKSPACE}/${{ steps.pick.outputs.file }} -> $URL"
+          curl -sS -X POST "$URL" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${API_TOKEN}" \
             --data-binary @"${{ steps.pick.outputs.file }}" \
-            | tee response.json
+            -o response.json -w "\nHTTP_STATUS:%{http_code}\n"
+          echo "Saved response.json (size=$(wc -c < response.json) bytes)"
+          cat response.json
 
-      - name: Extrair graph_id (se presente)
+      - name: Extract graph_id
+        id: extract_graph_id
         run: |
           set -euo pipefail
           sudo apt-get update -y >/dev/null 2>&1 || true
           sudo apt-get install -y jq >/dev/null 2>&1 || true
-          GRAPH_ID=$(jq -r '.graph_id // empty' response.json || true)
-          if [ -n "$GRAPH_ID" ]; then
-            echo "graph_id=$GRAPH_ID" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Graph created::graph_id=$GRAPH_ID"
+          if [ -f response.json ]; then
+            GRAPH_ID=$(jq -r '.graph_id // empty' response.json || true)
+            if [ -n "$GRAPH_ID" ]; then
+              echo "Found graph_id=$GRAPH_ID"
+              echo "::set-output name=graph_id::$GRAPH_ID"
+            else
+              echo "No graph_id present in response.json"
+            fi
           else
-            echo "::warning title=No graph_id in response::Verifique response.json"
+            echo "response.json not found"
           fi
 
-      - name: Listar graphs (debug)
+      - name: List graphs
         run: |
-          curl -sS --fail-with-body "${API_BASE%/}/api/graphs" | tee graphs.json
+          curl -sS "${API_BASE%/}/api/graphs" | jq '.' || true
