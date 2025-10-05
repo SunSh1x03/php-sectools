@@ -118,6 +118,90 @@ function getJsonBody(): array {
     return is_array($data) ? $data : [];
 }
 
+/**
+ * Validate outbound URL targets to mitigate SSRF.
+ */
+function validateOutboundUrl(?string $url): string {
+    if (!$url) {
+        errorJson('Invalid URL', 400);
+    }
+
+    $filtered = filter_var($url, FILTER_VALIDATE_URL);
+    if (!$filtered) {
+        errorJson('Invalid URL', 400);
+    }
+
+    $parts = parse_url($filtered);
+    $scheme = strtolower($parts['scheme'] ?? '');
+    if (!in_array($scheme, ['http', 'https'], true)) {
+        errorJson('URL scheme not allowed', 400);
+    }
+
+    $host = $parts['host'] ?? '';
+    if ($host === '' || strcasecmp($host, 'localhost') === 0) {
+        errorJson('URL host not allowed', 400);
+    }
+
+    $ips = [];
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        $ips[] = $host;
+    } else {
+        $records = @dns_get_record($host, DNS_A | DNS_AAAA);
+        if (is_array($records)) {
+            foreach ($records as $record) {
+                if (!empty($record['ip'])) {
+                    $ips[] = $record['ip'];
+                }
+                if (!empty($record['ipv6'])) {
+                    $ips[] = $record['ipv6'];
+                }
+            }
+        }
+        if (!$ips) {
+            $fallback = @gethostbynamel($host);
+            if (is_array($fallback)) {
+                $ips = array_merge($ips, $fallback);
+            }
+        }
+    }
+
+    if (!$ips) {
+        errorJson('Unable to resolve URL host', 400);
+    }
+
+    foreach ($ips as $ip) {
+        if (!isPublicIp($ip)) {
+            errorJson('URL resolves to a private address', 400);
+        }
+    }
+
+    return $filtered;
+}
+
+function isPublicIp(string $ip): bool {
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+    }
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+        if (in_array($ip, ['::1'], true)) {
+            return false;
+        }
+        if (stripos($ip, 'fe80:') === 0) { // link-local
+            return false;
+        }
+        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+    }
+    return false;
+}
+
+function applySafeCurlDefaults($ch): void {
+    if (defined('CURLPROTO_HTTP') && defined('CURLPROTO_HTTPS')) {
+        curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+        curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+    }
+    curl_setopt($ch, CURLOPT_MAXREDIRS, 5);
+}
+
 // -------------------- DB init --------------------
 function getDb(string $path): PDO {
     if (!file_exists($path)) {
@@ -337,8 +421,7 @@ switch ($endpoint) {
         if (!rateLimit('hdr_check', 40, 60)) errorJson('Rate limit exceeded', 429);
 
         $body = getJsonBody();
-        $url = $body['url'] ?? null;
-        if (!$url || !filter_var($url, FILTER_VALIDATE_URL)) errorJson('Invalid URL', 400);
+        $url = validateOutboundUrl($body['url'] ?? null);
 
         // fetch headers (HEAD with fallback to GET)
         $ch = curl_init($url);
@@ -346,6 +429,7 @@ switch ($endpoint) {
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        applySafeCurlDefaults($ch);
         $resp = curl_exec($ch);
         $err = curl_error($ch);
         curl_close($ch);
@@ -359,6 +443,7 @@ switch ($endpoint) {
         curl_setopt($ch, CURLOPT_NOBODY, true);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        applySafeCurlDefaults($ch);
         $resp = curl_exec($ch);
         $err = curl_error($ch);
         curl_close($ch);
@@ -397,8 +482,7 @@ switch ($endpoint) {
         if (!$VT_API_KEY) errorJson('VT_API_KEY not configured', 500);
 
         $body = getJsonBody();
-        $url = $body['url'] ?? null;
-        if (!$url || !filter_var($url, FILTER_VALIDATE_URL)) errorJson('Invalid URL', 400);
+        $url = validateOutboundUrl($body['url'] ?? null);
 
         // cache
         $cacheKey = 'vt_scan_' . $url;
@@ -416,6 +500,7 @@ switch ($endpoint) {
             "Content-Type: application/x-www-form-urlencoded"
         ]);
         curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+        applySafeCurlDefaults($ch);
         $resp = curl_exec($ch);
         $err = curl_error($ch);
         $http = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -445,6 +530,7 @@ switch ($endpoint) {
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_HTTPHEADER, ["x-apikey: {$VT_API_KEY}"]);
         curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        applySafeCurlDefaults($ch);
         $resp = curl_exec($ch);
         $err = curl_error($ch);
         $http = curl_getinfo($ch, CURLINFO_HTTP_CODE);
