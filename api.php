@@ -203,6 +203,113 @@ function applySafeCurlDefaults($ch): void {
 }
 
 // -------------------- DB init --------------------
+function seedExampleGraph(PDO $pdo): void {
+    $example = [
+        'meta' => ['name' => 'graph_1_exemplo'],
+        'hosts' => [
+            [
+                'ip' => '10.0.0.1',
+                'hostname' => 'web01.local',
+                'services' => [
+                    [
+                        'port' => 80,
+                        'proto' => 'tcp',
+                        'name' => 'http',
+                        'vulns' => [
+                            [
+                                'cve' => 'CVE-2021-1234',
+                                'title' => 'Example vuln',
+                                'severity' => 'High',
+                                'description' => 'Vulnerabilidade de exemplo para validação do pipeline.'
+                            ]
+                        ]
+                    ],
+                    [
+                        'port' => 22,
+                        'proto' => 'tcp',
+                        'name' => 'ssh',
+                        'vulns' => []
+                    ]
+                ]
+            ],
+            [
+                'ip' => '10.0.0.2',
+                'hostname' => 'db01.local',
+                'services' => [
+                    [
+                        'port' => 5432,
+                        'proto' => 'tcp',
+                        'name' => 'postgres',
+                        'vulns' => [
+                            [
+                                'cve' => '',
+                                'title' => 'Porta exposta sem firewall',
+                                'severity' => 'Medium',
+                                'description' => 'Exemplo educacional.'
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+    ];
+
+    try {
+        $pdo->beginTransaction();
+        $graphName = trim($example['meta']['name'] ?? 'graph_1_exemplo');
+        $stmt = $pdo->prepare('INSERT INTO graphs (name, created_at) VALUES (:name, :ts)');
+        $stmt->execute([':name' => $graphName, ':ts' => time()]);
+        $graphId = (int)$pdo->lastInsertId();
+
+        foreach ($example['hosts'] as $host) {
+            $ip = filter_var($host['ip'] ?? '', FILTER_VALIDATE_IP) ?: null;
+            if (!$ip) {
+                continue;
+            }
+
+            $hostname = substr($host['hostname'] ?? '', 0, 200);
+            $pdo->prepare('INSERT INTO hosts (graph_id, ip, hostname) VALUES (:g, :ip, :hn)')
+                ->execute([':g' => $graphId, ':ip' => $ip, ':hn' => $hostname]);
+            $hostId = (int)$pdo->lastInsertId();
+
+            $services = is_array($host['services'] ?? null) ? $host['services'] : [];
+            foreach ($services as $service) {
+                $port = intval($service['port'] ?? 0);
+                $proto = substr(strtolower($service['proto'] ?? 'tcp'), 0, 10);
+                $svcname = substr($service['name'] ?? '', 0, 100);
+
+                $pdo->prepare('INSERT INTO services (host_id, port, proto, name) VALUES (:h, :port, :proto, :name)')
+                    ->execute([':h' => $hostId, ':port' => $port, ':proto' => $proto, ':name' => $svcname]);
+                $serviceId = (int)$pdo->lastInsertId();
+
+                $pdo->prepare('INSERT INTO edges (graph_id, source, target, relation) VALUES (:g, :s, :t, :r)')
+                    ->execute([':g' => $graphId, ':s' => "host:$hostId", ':t' => "service:$serviceId", ':r' => 'runs']);
+
+                $vulns = is_array($service['vulns'] ?? null) ? $service['vulns'] : [];
+                foreach ($vulns as $vuln) {
+                    $cve = substr($vuln['cve'] ?? '', 0, 64);
+                    $title = substr($vuln['title'] ?? 'vuln', 0, 255);
+                    $severity = substr($vuln['severity'] ?? 'unknown', 0, 20);
+                    $desc = substr($vuln['description'] ?? '', 0, 2000);
+
+                    $pdo->prepare('INSERT INTO vulns (service_id, cve, title, severity, description) VALUES (:s, :cve, :title, :sev, :desc)')
+                        ->execute([':s' => $serviceId, ':cve' => $cve, ':title' => $title, ':sev' => $severity, ':desc' => $desc]);
+                    $vulnId = (int)$pdo->lastInsertId();
+
+                    $pdo->prepare('INSERT INTO edges (graph_id, source, target, relation) VALUES (:g, :s, :t, :r)')
+                        ->execute([':g' => $graphId, ':s' => "service:$serviceId", ':t' => "vuln:$vulnId", ':r' => 'vuln_on']);
+                }
+            }
+        }
+
+        $pdo->commit();
+    } catch (Exception $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+    }
+}
+
 function getDb(string $path): PDO {
     if (!file_exists($path)) {
         $pdo = new PDO('sqlite:' . $path);
@@ -244,6 +351,7 @@ function getDb(string $path): PDO {
             CREATE INDEX idx_graphs ON graphs(id);
         ";
         $pdo->exec($schema);
+        seedExampleGraph($pdo);
         return $pdo;
     } else {
         $pdo = new PDO('sqlite:' . $path);
